@@ -35,7 +35,13 @@ const (
 	// AWSEBSInTreePluginName is the name of the intree plugin for EBS
 	AWSEBSInTreePluginName = "kubernetes.io/aws-ebs"
 	// AWSEBSTopologyKey is the zonal topology key for AWS EBS CSI driver
-	AWSEBSTopologyKey = "topology." + AWSEBSDriverName + "/zone"
+	AWSEBSTopologyKey = "topology.kubernetes.io/zone"
+
+	// OldAWSEBSTopologyKey is the original key used for the EBS CSI driver.
+	// This has been deprecated. Use AWSEBSTopologyKey instead. However,
+	// translation code still writes and reads this old key to be backward-compatible
+	// with older versions of the EBS CSI driver. New key is always prioritized.
+	OldAWSEBSTopologyKey = "topology." + AWSEBSDriverName + "/zone"
 )
 
 var _ InTreePlugin = &awsElasticBlockStoreCSITranslator{}
@@ -60,8 +66,14 @@ func (t *awsElasticBlockStoreCSITranslator) TranslateInTreeStorageClassToCSI(sc 
 			params[csiFsTypeKey] = v
 		case zoneKey:
 			generatedTopologies = generateToplogySelectors(AWSEBSTopologyKey, []string{v})
+			if len(generatedTopologies) == 0 {
+				generatedTopologies = generateToplogySelectors(OldAWSEBSTopologyKey, []string{v})
+			}
 		case zonesKey:
 			generatedTopologies = generateToplogySelectors(AWSEBSTopologyKey, strings.Split(v, ","))
+			if len(generatedTopologies) == 0 {
+				generatedTopologies = generateToplogySelectors(OldAWSEBSTopologyKey, strings.Split(v, ","))
+			}
 		default:
 			params[k] = v
 		}
@@ -75,6 +87,12 @@ func (t *awsElasticBlockStoreCSITranslator) TranslateInTreeStorageClassToCSI(sc 
 		newTopologies, err := translateAllowedTopologies(sc.AllowedTopologies, AWSEBSTopologyKey)
 		if err != nil {
 			return nil, fmt.Errorf("failed translating allowed topologies: %v", err)
+		}
+		if len(newTopologies) == 0 {
+			newTopologies, err = translateAllowedTopologies(sc.AllowedTopologies, OldAWSEBSTopologyKey)
+			if err != nil {
+				return nil, fmt.Errorf("failed translating allowed topologies: %v", err)
+			}
 		}
 		sc.AllowedTopologies = newTopologies
 	}
@@ -147,6 +165,18 @@ func (t *awsElasticBlockStoreCSITranslator) TranslateInTreePVToCSI(pv *v1.Persis
 		return nil, fmt.Errorf("failed to translate topology: %v", err)
 	}
 
+	// We also need to add the old key for backwards-compatibility
+	// Repurposed from translateTopologyFromInTreeToCSI
+	zoneLabel, regionLabel := getTopologyLabel(pv)
+	zones := getTopologyValues(pv, zoneLabel)
+	if len(zones) == 0 {
+		if label, ok := pv.Labels[zoneLabel]; ok {
+			zones = strings.Split(label, labelMultiZoneDelimiter)
+	}
+	if len(zones) > 0 {
+		addTopology(pv, OldAWSEBSTopologyKey, zones)
+	}
+
 	pv.Spec.AWSElasticBlockStore = nil
 	pv.Spec.CSI = csiSource
 	return pv, nil
@@ -177,6 +207,10 @@ func (t *awsElasticBlockStoreCSITranslator) TranslateCSIPVToInTree(pv *v1.Persis
 
 	// translate CSI topology to In-tree topology for rollback compatibility
 	if err := translateTopologyFromCSIToInTree(pv, AWSEBSTopologyKey, getAwsRegionFromZones); err != nil {
+		return nil, fmt.Errorf("failed to translate topology. PV:%+v. Error:%v", *pv, err)
+	}
+
+	if err := translateTopologyFromCSIToInTree(pv, OldAWSEBSTopologyKey, getAwsRegionFromZones); err != nil {
 		return nil, fmt.Errorf("failed to translate topology. PV:%+v. Error:%v", *pv, err)
 	}
 

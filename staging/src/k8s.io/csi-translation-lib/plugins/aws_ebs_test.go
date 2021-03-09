@@ -102,6 +102,11 @@ func TestTranslateEBSInTreeStorageClassToCSI(t *testing.T) {
 			sc:    NewStorageClass(map[string]string{"fstype": "ext3"}, nil),
 			expSc: NewStorageClass(map[string]string{"csi.storage.k8s.io/fstype": "ext3"}, nil),
 		},
+		{
+			name:  "translate with zone key",
+			sc:    NewStorageClass(map[string]string{"zone": "us-west-2a"}, nil),
+			expSc: NewStorageClass(map[string]string{"topology.kubernetes.io/zone": "us-west-2"}, nil),
+		},
 	}
 
 	for _, tc := range cases {
